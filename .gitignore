@@ -1,36 +1,46 @@
-# =====================================================================
-# lotus_power - CFD Optimization Project
-# .gitignore: Keep ONLY the cfd_opt/ directory with Python code
-# Everything else in the repo root is ignored
-# =====================================================================
-
-# =====================================================================
-# IGNORE EVERYTHING IN ROOT EXCEPT cfd_opt/
-# =====================================================================
-# First, ignore everything in root
+# 1. Ignore everything by default (Blacklist approach)
 /*
 
-# Then explicitly allow the cfd_opt directory and its contents
+# 2. Whitelist necessary root config files and main scripts
+!.gitignore
+!README.md
+!LICENSE
+!requirements.txt
+!pyproject.toml
+!setup.py
+!setup.cfg
+!/test_phase1.py
+!/shelfsim.py
+!/diagnose.py
+
+# 3. Whitelist core code & CAD directories
+!/src/
+!/src/**
 !/cfd_opt/
 !/cfd_opt/**
-!/cfd_opt/py_files/
-!/cfd_opt/py_files/*
+!/CAD_FILES/
+!/CAD_FILES/**
 
-# =====================================================================
-# Explicitly ignore everything else in root
-# =====================================================================
-
-# Fluent transcript files (.trn)
-*.trn
-
-# Python files in root (not in cfd_opt)
-/*.py
-
-# Directories to ignore completely
-/.venv/
-/.venv/**
+# 4. Ignore build, environment, and cache artifacts
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.tox/
+.nox/
+*.egg-info/
+dist/
+build/
+*.egg
 /.vscode/
 /.vscode/**
+.idea/
+
+# 5. Ignore non-essential project folders
 /FM_AbdelRahman_35788/
 /FM_AbdelRahman_35788/**
 /georges_files_old/
@@ -52,60 +62,23 @@
 /CAD_workflow_files/
 /CAD_workflow_files/**
 
-# Specific root files to ignore
-/shelfsim.py
-/diagnose.py
-/cleanup-fluent-AbdelRahman-10684.bat
-/cleanup-fluent-AbdelRahman-27676.bat
+# 6. Ignore heavy CFD meshes, Fluent transcripts, batch files, and images
+*.msh.h5
+*.sf
+*.pmdb
+*.wft
+*.trn
+/cleanup-fluent-*.bat
 /CAD.msh.h5
 /fig4_hjb_boundary_synergistic.png
 
-# =====================================================================
-# Python / Virtual Environment
-# =====================================================================
-.venv/
-venv/
-env/
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.coverage
-.tox/
-.nox/
-*.egg-info/
-dist/
-build/
-*.egg
-
-# =====================================================================
-# IDE / Editor
-# =====================================================================
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# =====================================================================
-# OS / Build artifacts
-# =====================================================================
+# 7. Ignore temporary editor files & runtime logs
 *.log
 *.tmp
 *.temp
 *.bak
 *.swp
-
-# =====================================================================
-# Keep these important files if they exist in root
-# (Uncomment if you add them later)
-# =====================================================================
-!.gitignore
-!README.md
-!LICENSE
-!requirements.txt
-!pyproject.toml
-!setup.py
-!setup.cfg
+*.swo
+*~
+.DS_Store
+Thumbs.db
