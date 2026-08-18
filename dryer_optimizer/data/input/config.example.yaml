@@ -1,0 +1,19 @@
+dryer:
+  row_quantity: 20
+  height_min: 1.6
+  height_max: 1.7
+grid:
+  nx: 48
+  ny: 96
+physics:
+  inlet_velocity: 0.5
+  inlet_width_fraction: 0.22
+objective:
+  pressure_drop_weight: 0.02
+  material_cost_weight: 0.02
+  max_design_fraction: 0.18
+optimization:
+  iterations: 20
+  initial_solid_fraction: 0.05
+  filter_radius_cells: 2
+  projection_beta: 1.0

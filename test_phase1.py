@@ -16,11 +16,13 @@ from src.cfd import objective_function
 sys.stdout.reconfigure(line_buffering=True)
 
 def run_test():
+    shelf_quantity = 2  # Change to 20 for full-scale test
     print("--- Starting Phase 1 End-to-End Test ---", flush=True)
-    print("Testing Parameters: lip_w = 40.0mm, shelf_spacing = 90.0mm", flush=True)
+    print(f"Testing Parameters: lip_w=40.0mm, shelf_spacing=90.0mm, "
+          f"shelves={shelf_quantity}", flush=True)
     
     try:
-        final_cov = objective_function([40.0, 90.0])
+        final_cov = objective_function([40.0, 90.0], shelf_quantity=shelf_quantity)
         print(f"\n--- Test Successful! ---\nFinal CoV: {final_cov}", flush=True)
         with open("status.txt", "w") as f:
             f.write("SUCCESS")

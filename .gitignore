@@ -21,6 +21,19 @@
 !/CAD_FILES/
 !/CAD_FILES/**
 
+# 3b. Whitelist the dryer optimizer source, but keep its local paper archive ignored
+!/dryer_optimizer/
+!/dryer_optimizer/**
+/dryer_optimizer/research_papers/
+/dryer_optimizer/research_papers/**
+/dryer_optimizer/data/output/*
+!/dryer_optimizer/data/output/.gitkeep
+/dryer_optimizer/sldw_dump/*
+!/dryer_optimizer/sldw_dump/.gitkeep
+
+# 3b2. Ignore the cloned reference repositories under dryer research (the docs stay tracked)
+/dryer_optimizer/research/reference_code/*/
+
 # 4. Ignore build, environment, and cache artifacts
 .venv/
 venv/

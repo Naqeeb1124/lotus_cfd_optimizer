@@ -1,0 +1,290 @@
+DRYER OPTIMIZER SESSION DOCUMENTATION
+=====================================
+
+Last updated: 2026-08-13
+Project: E:/Projects/lotus_power
+
+PURPOSE
+-------
+Reduced-order 2D Y-Z airflow topology optimizer for the build123d tray dryer.
+The engineering objective is to distribute air more uniformly over exactly 20
+trays while limiting baffle material and pressure demand. The output is a CAD/
+CFD candidate, not a replacement for final 3D validation.
+
+USER INPUTS
+-----------
+CAD source: test_files/sldw_cad.py
+Fan curve:
+  Q [m3/s]  = 0.00, 0.25, 0.50, 0.75, 1.00
+  dP [Pa]   = 1800, 1650, 1300, 700, 0
+Fan: 315 mm plug fan; the reduced model uses 0.315 m out-of-plane width.
+Required CAD constraints: 20 trays; total height 1.6-1.7 m.
+Derived dimensions: tray stack 1.280 m; mechanical room 0.350 m; total 1.630 m;
+side-section airflow depth 0.702 m.
+
+CURRENT PHYSICS
+---------------
+The optimizer now spans the FULL 1.630 m height so the fan actuator is inside
+its mechanical room. Horizontal grid coordinate is airflow depth/CAD Y; vertical
+coordinate is CAD Z from cabinet bottom.
+
+PhysicsConfig defaults:
+  air density = 1.20 kg/m3
+  molecular viscosity = 1.8e-5 Pa s
+  eddy viscosity closure = 2.0e-4 Pa s
+  effective viscosity = 2.18e-4 Pa s
+  alpha_max = 1e5
+  Brinkman q = 0.05
+  fan diameter = 0.315 m
+  fan thickness = 0.120 m
+  fan source direction = -1.0 (see direction note below)
+  Newton max iterations = 120
+  Newton relaxation = 0.30, with residual backtracking and warm starts
+
+The equations are steady incompressible Navier-Stokes with Brinkman friction:
+  rho*(u.grad)u = -grad(p) + mu_eff*laplacian(u) - alpha*u + f_fan
+  div(u) = 0
+
+The solver uses a staggered MAC grid, first-order upwind convection, sparse
+SciPy matrices, and damped Newton iterations. The internal fan source is
+calculated from the fan curve:
+  Q_fan = b * sum(u_fan_face * dy)
+  f_fan = dP(Q_fan) / fan_thickness
+where b=0.315 m. The curve is piecewise linear and the exact segment slope
+(dP/dQ) is included in the final residual Jacobian.
+
+The model is a SEALED box: top/bottom and all side faces are no-slip walls and
+the internal fan is the only momentum source. There is no prescribed velocity
+inlet and no external opening; the fan's pressure rise recirculates the air
+through the tray stack (supply plenum -> trays -> return plenum -> fan). The
+global pressure null space is anchored at p = 0 gauge in the four wall corners
+and in a fluid cell at the center of the mechanical room
+(row = ny - ny//8, col = nx//2), which is guaranteed to sit above the tray
+stack, outside the fan actuator, and off the walls. The retained
+left_opening_flow/right_opening_flow diagnostics are identically zero in the
+sealed configuration.
+
+Fan direction note: fan_source_direction = -1.0 in PhysicsConfig. It is the
+sign factor in Q_fan = dir * b * dy * sum(u_fan_face). With -1.0, positive
+Q_fan means air flowing in the correct physical direction
+(supply -> trays -> return); the forward solution respects this orientation.
+
+DESIGN VARIABLE SEMANTICS
+-------------------------
+Saved array name: density. It is SOLID fraction rho_s = 1-gamma.
+  density=0 -> fluid gamma=1
+  density=1 -> solid baffle gamma=0
+
+Brinkman interpolation:
+  alpha = alpha_min + (alpha_max-alpha_min)*q*rho_s/(q+1-rho_s)
+with exact derivative used by the adjoint. Geometry-locked solids are forced
+to alpha_max and cannot be design cells.
+
+OBJECTIVE
+---------
+For each of 20 tray sample lines, average horizontal velocity v_i is computed.
+The target is derived from the SIGNED fan flow (the actual mass throughput of
+the internal fan), split equally among 20 tray lines and converted to a
+velocity using the fan's out-of-plane width and the tray span:
+  v_target = Q_fan/(20*b*span),  span = max(tray_depth, dx)
+  J_uniformity = mean((v_i-v_target)^2)/velocity_reference^2
+The signed fan flow (not its absolute value) is used so that
+Q_fan and dQ_fan/du_face = dir*b*dy are continuous through Q = 0; abs() would
+create a gradient discontinuity at the shutoff operating point and corrupt the
+adjoint at startup and during Newton warm-starts whenever the solver passes
+through Q = 0.
+
+Additional objective terms:
+  material_cost_weight * solid_fraction
+  volume_constraint_weight * quadratic penalty outside 5%-15% solid fraction
+  pressure_constraint_weight * quadratic penalty above 300 Pa fan pressure
+
+This prevents a fake solution consisting of a nearly solid wall with tiny
+pinholes. The pressure constraint is a penalty in the current V1; a future
+augmented-Lagrangian or explicit constrained update can make it harder.
+
+ADJOINT
+-------
+At each converged nonlinear state, FlowState.matrix is the analytic Jacobian
+of the full discrete residual. It includes:
+  - Brinkman resistance derivatives;
+  - upwind convection derivatives with respect to both transported and
+    advecting velocities;
+  - dense low-rank fan dP/dQ coupling;
+  - continuity and pressure boundary rows.
+
+The adjoint solves J.T lambda = dJ/dstate and then evaluates the density
+sensitivity. dJ/dstate is exact and combines three coupled pieces:
+  1. the tray-uniformity SSE with the fan-flow-dependent target, via the chain
+     rule dJ/du_face = dJ/dv_target * dv_target/dQ * dQ/du_face with
+     dQ/du_face = fan_source_direction * b * dy;
+  2. the pressure-cap penalty, dJ_p/dQ = w * 2*excess/dP_ref^2 * dP/dQ (the
+     exact piecewise-linear fan-curve slope), combined with the same dQ/du_face;
+  3. the explicit material/volume terms (returned separately).
+fan_source_direction is owned by PhysicsConfig and is threaded through
+compute_adjoint -> objective_state_gradient. It is a REQUIRED keyword argument
+of objective_state_gradient, so a non-default direction can no longer silently
+produce a wrong-signed gradient (the earlier code accidentally defaulted it to
+-1.0 regardless of configuration). A central finite-difference check on a 12x24
+grid checks three design cells and passes with error below 2e-4, including the
+Q=0 startup state; a regression test additionally verifies that flipping
+fan_source_direction exactly flips the sign of the fan-face gradient entries.
+The current direct check observed a maximum absolute error of about 1.7e-7
+after the final target/physics corrections.
+
+FILES CHANGED/IMPORTANT
+-----------------------
+config.py: full-height dimensions, fan curve, effective viscosity, pressure
+and volume constraint configuration, fan_source_direction = -1.0.
+physics/fan.py: validated monotone piecewise-linear fan curve.
+physics/brinkman.py: rational solid-fraction interpolation and exact derivative.
+physics/boundary_conditions.py: sealed no-slip walls and the mechanical-room
+pressure anchor (row = ny - ny//8, col = nx//2) plus wall corners.
+physics/solver.py: fan source, nonlinear MAC Newton solve, full Jacobian,
+operating-point diagnostics.
+geometry/domain.py: full 1.630 m grid, internal fan mask, sealed side walls,
+20 tray masks and design/forbidden regions.
+optimization/objective.py: signed fan-flow target SSE, pressure-cap and volume
+terms, exact state and explicit density derivatives; fan_source_direction is a
+required keyword threaded from PhysicsConfig.
+optimization/adjoint.py: transposed full final Jacobian, Brinkman derivative,
+and forwards solver.physics.fan_source_direction to the objective gradient.
+main.py: fan geometry construction, fan diagnostics and JSON/NPZ output.
+visualization/plots.py: actual MAC speed, tray distribution, fan pressure history.
+tests/test_flow.py: sealed-model forward-flow assertions (through-tray
+circulation, fan-curve operating point, zero side flows, anchored pressure).
+tests/test_adjoint.py: FD gradient check plus fan_source_direction sign-flip
+regression test.
+README.md: current equations, assumptions, run instructions, limitations.
+research/: reference studies added this session (see next section).
+.gitignore: dryer_optimizer/research/reference_code/*/ is ignored (only the
+reference manifests/docs are tracked).
+
+RESEARCH / REFERENCE STUDIES (2026-08-13)
+-----------------------------------------
+Six public reference implementations were cloned READ-ONLY into
+research/reference_code/ (git-ignored; only the manifest is tracked), each
+pinned by commit with LICENSE/README preserved:
+
+  topflow               a3a3f7b (2023-01)  BSD-3       MATLAB density-based NS TO
+  Stokes_TO             308a79c (2022-02)  no license  C++/CUDA GPU Stokes TO (MMA)
+  cashocs               8bdd5d7 (2026-08)  GPL-3.0     Python/FEniCS level-set TO
+  dolfin-adjoint        6c5bc13 (2025-12)  LGPL-3.0    Python/FEniCS tape adjoint
+  topy                  3c461c4 (2022-08)  GPL-3.0     Python structural TO (OC)
+  shapeOptimizationFoam 474daf5 (2018-06)  GPL-3.0     C++/OpenFOAM continuous adjoint
+
+Study documents (all under dryer_optimizer/research/):
+  REFERENCE_MANIFEST.md           URLs, commits, licenses, purposes, relevance.
+  RESEARCH_INDEX.md               role of each repo across 14 pipeline components.
+  IMPLEMENTATION_COMPARISON.md    per-component comparison and recommended stack.
+  PIPELINE_TRACE.md               verified source-level trace of the pipeline
+                                  (design var -> interpolation -> forward solve
+                                  -> objective -> adjoint -> gradient -> filtering
+                                  -> update -> geometry) with exact file/function
+                                  references for every stage and repository.
+  CURRENT_IMPLEMENTATION_AUDIT.md module-by-module audit of the production code
+                                  (math, complexity, risks, test coverage).
+  IMPLEMENTATION_GAP_ANALYSIS.md  stage classification, performance and test-gap
+                                  analysis, and the recommended implementation
+                                  order.
+
+Key findings that matter for the production solver:
+  1. The existing architecture is the right family: discrete adjoint on the
+     converged Jacobian (topflow), MAC grid (Stokes_TO), Borrvall-Petersson
+     rational law (topflow/Stokes_TO), chain-rule-transpose filter.
+  2. Reference priority corrected by the source evidence: topflow is the
+     primary reference for most stages (adjoint, OC update, interpolation,
+     0.5-contour -> DXF export); Stokes_TO first for the finite-difference
+     gradient checker and the MMA update path; cashocs for the pressure-drop
+     objective (pipe-bend). This supersedes the STO > TF > CA ordering
+     suggested when the repos were acquired.
+  3. GAP classification of the current code: 5 COMPLETE, 3 MISSING (OC update,
+     DXF export, Brinkman-penalty continuation on q), 4 PARTIAL, 0 INCORRECT,
+     2 NEEDS_VERIFICATION.
+  4. Three most serious correctness risks: (a) the target-velocity degeneracy
+     below; (b) the adjoint finite-difference test covers only a reduced
+     objective (pressure/volume/material weights zeroed) at a single epsilon;
+     (c) no analytic-flow or mass-conservation tests for the forward solver.
+  5. Three biggest performance bottlenecks: (a) per-cell Python assembly loops;
+     (b) no LU factorization reuse between the primal and adjoint solves (the
+     adjoint re-factorizes A^T); (c) Newton backtracking re-assembles the full
+     matrix per trial. Measured: 16,288 DOF at 48x112; forward solve ~188 s,
+     24x56 ~24 s, 16x32 a few seconds. A 30-iteration 48x112 run is ~1.5-2 h
+     and does not yet meet the seconds-to-minutes target.
+  Nothing in the production solver was changed during these studies.
+
+OUTPUTS
+-------
+data/output/topology.npz:
+  density, binary, width, height, velocity_u, velocity_v, pressure,
+  tray_averages, objective, fan_flow, fan_pressure, target_velocity,
+  left_opening_flow, right_opening_flow (identically zero in the sealed model).
+data/output/topology.svg: binary topology contour.
+data/output/flow.png: density, solved speed, pressure and tray levels.
+data/output/history.png: objective, CV, solid fraction and fan pressure.
+data/output/summary.json: metrics, fan curve, constraint, dimensions.
+
+CAD bridge:
+  python dryer_optimizer/sldw_optimized.py --density-threshold 0.10
+writes STEP and optimized_distribution.png under dryer_optimizer/sldw_dump/.
+The topology's horizontal axis maps to CAD Y and vertical axis to CAD Z; baffle
+runs extrude across CAD X. The threshold flag is a provisional CAD conversion
+only and does not rewrite topology.npz.
+
+VALIDATION COMMANDS
+-------------------
+Fast suite:
+  .venv/Scripts/python.exe -m pytest dryer_optimizer/tests -q
+  Expected current suite: 11 tests.
+Compile:
+  .venv/Scripts/python.exe -m compileall -q dryer_optimizer
+Fast optimizer run:
+  .venv/Scripts/python.exe -m dryer_optimizer.main --iterations 5 --nx 24 --ny 56
+Higher-resolution run:
+  .venv/Scripts/python.exe -m dryer_optimizer.main --iterations 30 --nx 48 --ny 112
+
+The default-grid Newton solve is materially more expensive than the old linear
+Stokes model because each design iteration requires repeated sparse nonlinear
+factorizations. Warm-start continuation is used between topology iterations.
+Use 24x56 to iterate on topology and 48x112 for a final check.
+
+KNOWN LIMITATIONS / DO NOT CLAIM
+--------------------------------
+- 2D slice cannot model 315 mm plug-fan swirl, blade effects, or discharge
+  profile; calibrate against 3D CFD.
+- Effective eddy viscosity is a closure, not a turbulence model.
+- The 2D model is a sealed box: there is no external make-up air, and the
+  retained opening-flow diagnostics are identically zero by construction.
+- On grids coarser than roughly 16x32 the fan is under-resolved inside the
+  350 mm mechanical room and the Newton solve can converge to a Q=0 local
+  recirculation instead of through-tray circulation; use 16x32 or finer.
+- Tray perforations are represented by reduced resistance; CAD tray solids need
+  porous/perforated treatment in Fluent/FloEFD.
+- Density filtering/projection and volume/pressure penalties are not a global
+  manufacturing-cost optimum.
+- Target-velocity degeneracy (flagged in research/IMPLEMENTATION_GAP_ANALYSIS.md):
+  the uniformity target v_t = Q_fan/(20*b*span) scales with the fan flow the
+  optimizer itself controls, so the optimizer is structurally rewarded for
+  reducing Q (uniformity trivially improves and the pressure cap loosens).
+  Must be resolved (fixed target, CV-only objective, or minimum-velocity term)
+  before optimized topologies are trusted.
+- No heat, humidity, evaporation, species, transient, 3D, SolidWorks, or Fluent
+  automation has been added.
+
+NEXT SESSION (implementation order from research/IMPLEMENTATION_GAP_ANALYSIS.md)
+------------------------------------------------------------------------------
+1. Verification first: analytic Poiseuille/obstacle flow cases, mass
+   conservation, no-slip boundary checks, and a full-objective multi-epsilon
+   finite-difference adjoint test (with the pressure cap ACTIVE). Fix anything
+   these expose.
+2. Resolve the target-velocity degeneracy (fixed target or CV-only objective).
+3. Performance: vectorized single-pass assembly, backtracking residual reuse,
+   and LU reuse for the adjoint (splu + transposed solve); re-measure 24x56
+   and 48x112 timings.
+4. Upgrade the update to OC with Lagrange-multiplier bisection on the volume
+   fraction, then add continuation on the Brinkman penalty q.
+5. Add DXF export (topflow export.m 0.5-contour recipe) and contour cleanup
+   (min-feature, disconnected-island removal) so the result is manufacturable.
+6. Cross-validate against a reference case (topflow double-pipe) and calibrate
+   eddy viscosity / tray resistance / fan placement; then 3D CFD with the
+   same fan curve.
